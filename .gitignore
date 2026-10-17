@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.benchmarks/
+
+# local scratch
+.venv/
+venv/
+
+# verification screenshots
+.*.png

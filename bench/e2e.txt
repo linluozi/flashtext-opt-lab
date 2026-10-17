@@ -1,0 +1,7 @@
+book               chars    base ms     opt ms  speedup       hits
+en1342.txt        732275      130.7       80.2    1.63x      91137
+en1661.txt        581601      102.1       65.7    1.55x      73736
+en2701.txt       1238312      221.0      144.3    1.53x     153527
+en98.txt          776912      137.9       86.4    1.60x      98468
+
+aggregate min ratio: 1.53x   median: 1.57x

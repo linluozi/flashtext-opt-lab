@@ -1,0 +1,19 @@
+kw           doc       span   base min    opt min min ratio
+kw_1k.txt    2000     False      0.259      0.166     1.56x
+kw_1k.txt    2000      True      0.239      0.161     1.48x
+kw_1k.txt    20000    False      2.586      1.660     1.56x
+kw_1k.txt    20000     True      2.566      1.804     1.42x
+kw_1k.txt    200000   False     28.229     17.338     1.63x
+kw_1k.txt    200000    True     27.615     19.323     1.43x
+kw_10k.txt   2000     False      0.276      0.167     1.65x
+kw_10k.txt   2000      True      0.261      0.168     1.55x
+kw_10k.txt   20000    False      3.658      2.110     1.73x
+kw_10k.txt   20000     True      3.599      2.320     1.55x
+kw_10k.txt   200000   False     35.987     21.514     1.67x
+kw_10k.txt   200000    True     33.870     23.288     1.45x
+kw_48k.txt   2000     False      0.251      0.170     1.48x
+kw_48k.txt   2000      True      0.239      0.174     1.37x
+kw_48k.txt   20000    False      3.281      2.437     1.35x
+kw_48k.txt   20000     True      3.537      2.820     1.25x
+kw_48k.txt   200000   False     35.934     24.725     1.45x
+kw_48k.txt   200000    True     36.175     28.156     1.28x

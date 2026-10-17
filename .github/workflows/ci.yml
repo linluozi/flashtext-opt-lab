@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test runner
+        run: python -m pip install --upgrade pip pytest
+
+      # Differential + fuzz tests against the frozen upstream copy in
+      # tests/upstream_reference.py.
+      - name: Differential tests
+        run: python -m pytest tests -q
+
+      # Upstream's own 39 tests, run against the optimised package.
+      # PYTHONPATH is set per-shell rather than via env: on the Windows runner
+      # an env-level PYTHONPATH would still use the ':' separator from the
+      # workflow file, and ':' is not a path separator there.
+      - name: Upstream test suite (posix)
+        if: runner.os != 'Windows'
+        run: PYTHONPATH=opt_pkg python -m pytest test -q
+
+      - name: Upstream test suite (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "opt_pkg"
+          python -m pytest test -q
+
+      # Smoke benchmark: must not touch the committed results.json.
+      - name: Smoke benchmark
+        run: python bench/benchmark.py --smoke --no-write
+
+      - name: Verify smoke run did not touch results.json
+        shell: bash
+        run: |
+          if git diff --quiet -- bench/results.json; then
+            echo "results.json untouched, as intended"
+          else
+            echo "::error::the smoke run modified bench/results.json"
+            exit 1
+          fi

@@ -1,0 +1,215 @@
+--- upstream/keyword.py	2026-10-18 00:15:32.504246300 +0800
++++ opt_pkg/flashtext/keyword.py	2026-10-18 00:49:46.001930000 +0800
+@@ -1,6 +1,7 @@
+ import os
+ import string
+ import io
++import re
+ 
+ 
+ class KeywordProcessor(object):
+@@ -52,6 +53,9 @@
+         self.keyword_trie_dict = dict()
+         self.case_sensitive = case_sensitive
+         self._terms_in_trie = 0
++        # MODIFIED (optimisation): caches for the exact-match fast path.
++        # Dropped by _invalidate_exact_index() whenever the trie changes.
++        self._exact_index = None
+ 
+     def __len__(self):
+         """Number of terms present in the keyword_trie_dict
+@@ -150,6 +154,8 @@
+                 status = True
+                 self._terms_in_trie += 1
+             current_dict[self._keyword] = clean_name
++            # MODIFIED (optimisation): trie changed -> rebuild fast-path index
++            self._invalidate_exact_index()
+         return status
+ 
+     def __delitem__(self, keyword):
+@@ -195,6 +201,8 @@
+                 # successfully removed keyword
+                 status = True
+                 self._terms_in_trie -= 1
++                # MODIFIED (optimisation): trie changed -> rebuild fast-path index
++                self._invalidate_exact_index()
+         return status
+ 
+     def __iter__(self):
+@@ -211,6 +219,8 @@
+ 
+         """
+         self.non_word_boundaries = non_word_boundaries
++        # MODIFIED (optimisation): the word-run pattern depends on this set
++        self._invalidate_exact_index()
+ 
+     def add_non_word_boundary(self, character):
+         """add a character that will be considered as part of word.
+@@ -221,6 +231,152 @@
+ 
+         """
+         self.non_word_boundaries.add(character)
++        # MODIFIED (optimisation): the word-run pattern depends on this set
++        self._invalidate_exact_index()
++
++    # ------------------------------------------------------------------
++    # MODIFIED (optimisation): exact-match fast path.
++    #
++    # Why this is possible
++    # --------------------
++    # With ``max_cost == 0`` the upstream loop only ever
++    #   (a) starts a candidate at a character that is not a word character, or
++    #       at index 0 (it begins the loop there);
++    #   (b) inside a word run it just walks the trie while the character is a
++    #       key of the current node, and on the first miss it skips to the end
++    #       of the run -- so a candidate can never start mid-run;
++    #   (c) accepts a match only when the *next* character is not a word
++    #       character (or at end of string), i.e. exactly at a run boundary;
++    #   (d) overwrites ``longest_sequence_found`` on every hit, so the *longest*
++    #       accepted candidate wins.
++    # Therefore the result is fully determined by the maximal ``[0-9A-Za-z_]+``
++    # runs of the document plus the keyword set:
++    #   * a run that is itself a keyword maps to that keyword's clean name;
++    #   * otherwise the longest keyword that is a strict prefix of the run wins,
++    #     but only if the keyword ends inside the run -- and a keyword always
++    #     ends at its own last character, so any keyword that is a prefix of the
++    #     run qualifies exactly when the trie walk survived that far, which is
++    #     equivalent to the prefix being a key of the trie;
++    #   * keywords containing non-word characters ("new york") need the exact
++    #     separator characters, so they are matched by ``str.startswith`` on the
++    #     full keyword string, gated by the (first, second) token pair so only a
++    #     handful of candidates are ever tried.
++    # Every branch above is verified to be byte-identical to the upstream loop
++    # by ``tests/test_exact_fast_path.py`` (differential + fuzz).
++    # ------------------------------------------------------------------
++
++    def _invalidate_exact_index(self):
++        """MODIFIED (optimisation): drop the cached fast-path index."""
++        self._exact_index = None
++
++    def _build_exact_index(self):
++        """MODIFIED (optimisation): build the token-level lookup tables once."""
++        index = self._exact_index
++        if index is not None:
++            return index
++
++        nwb = self.non_word_boundaries
++        kw_marker = self._keyword
++        cls = ''.join(re.escape(c) for c in sorted(nwb))
++        pattern = re.compile('[' + cls + ']+') if cls else None
++
++        single = {}       # token  -> clean name (keyword without separators)
++        pairs = {}        # tok0 -> {tok1 -> [(keyword, clean, ntok)]}  longest first
++        tails = {}        # tok0 -> [(keyword, clean)]  keyword ends in separators
++        usable = pattern is not None
++        if usable:
++            for kw, clean in self.get_all_keywords().items():
++                if any(c not in nwb for c in kw):
++                    # A leading separator ('.NET') would make the first token of
++                    # the keyword differ from the first token of the document
++                    # run, so such keywords are not representable here.
++                    if kw[0] not in nwb:
++                        usable = False
++                        break
++                    toks = pattern.findall(kw)
++                    if len(toks) >= 2:
++                        pairs.setdefault(toks[0], {}).setdefault(toks[1], []).append(
++                            (kw, clean, len(toks)))
++                    elif toks:
++                        tails.setdefault(toks[0], []).append((kw, clean))
++                    else:
++                        usable = False
++                        break
++                else:
++                    single[kw] = clean
++        if usable:
++            # MODIFIED (optimisation): nested dicts instead of tuple keys -- the
++            # inner lookup is a plain string get, so no tuple is allocated per
++            # token on the hot path.
++            for inner in pairs.values():
++                for bucket in inner.values():
++                    bucket.sort(key=lambda item: -len(item[0]))
++            for bucket in tails.values():
++                bucket.sort(key=lambda item: -len(item[0]))
++
++        index = (pattern, single, pairs, tails) if usable else None
++        self._exact_index = index
++        return index
++
++    def _extract_exact(self, sentence, span_info, case_sensitive):
++        """MODIFIED (optimisation): exact-match extraction over word runs.
++
++        Returns ``None`` when the fast path is unavailable, so the caller can
++        fall back to the original trie loop.
++        """
++        index = self._build_exact_index()
++        if index is None:
++            return None
++        pattern, single, pairs, tails = index
++
++        tokens = [(m.group(), m.start(), m.end()) for m in pattern.finditer(sentence)]
++        total = len(tokens)
++        get_single = single.get
++        get_pair = pairs.get
++        out = []
++        append = out.append
++        length = len(sentence)
++        nwb = self.non_word_boundaries
++        i = 0
++        while i < total:
++            token, start, end = tokens[i]
++            value = get_single(token)
++            step = 1
++            inner = get_pair(token)
++            if inner is not None and i + 1 < total:
++                bucket = inner.get(tokens[i + 1][0])
++            else:
++                bucket = None
++            if bucket is not None:
++                for kw, clean, ntok in bucket:
++                    if sentence.startswith(kw, start):
++                        stop = start + len(kw)
++                        if stop == length or sentence[stop] not in nwb:
++                            if stop >= end:
++                                value = clean
++                                end = stop
++                                step = ntok
++                            break
++            # A token can be both the first token of a phrase *and* the start of
++            # a keyword that ends in separators ('is' -> 'is--'), so the tails
++            # bucket must be consulted independently of the pairs bucket.
++            tail_bucket = tails.get(token)
++            if tail_bucket is not None:
++                for kw, clean in tail_bucket:
++                    if sentence.startswith(kw, start):
++                        stop = start + len(kw)
++                        if stop == length or sentence[stop] not in nwb:
++                            if stop >= end:
++                                value = clean
++                                end = stop
++                            break
++            if value is not None:
++                if span_info:
++                    append((value, start, end))
++                else:
++                    append(value)
++            i += step
++        return out
+ 
+     def add_keyword(self, keyword, clean_name=None):
+         """To add one or more keywords to the dictionary
+@@ -475,6 +631,14 @@
+         if not sentence:
+             # if sentence is empty or none just return empty list
+             return keywords_extracted
++        # MODIFIED (optimisation): exact-match fast path.  Disabled when fuzzy
++        # matching is requested; falls back to the original loop if the index
++        # cannot represent the current keyword set.
++        if max_cost <= 0:
++            fast_sentence = sentence if self.case_sensitive else sentence.lower()
++            fast_result = self._extract_exact(fast_sentence, span_info, self.case_sensitive)
++            if fast_result is not None:
++                return fast_result
+         if not self.case_sensitive:
+             sentence = sentence.lower()
+         current_dict = self.keyword_trie_dict
