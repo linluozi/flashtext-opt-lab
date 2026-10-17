@@ -1,5 +1,8 @@
 # flashtext-opt-lab
 
+[![ci](https://github.com/linluozi/flashtext-opt-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/linluozi/flashtext-opt-lab/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 An optimisation of **[vi3k6i5/flashtext](https://github.com/vi3k6i5/flashtext) 2.7**
 (MIT, 5.7k stars) — a keyword extraction / replacement library built on a
 character trie.
